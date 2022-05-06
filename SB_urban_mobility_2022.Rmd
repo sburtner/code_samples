@@ -1,0 +1,1665 @@
+---
+title: "AAG2019"
+author: "Susan Burtner"
+date: "12/13/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Cleaning CHTS data
+
+# Load necessary libraries
+```{r lib}
+library(tidyverse)
+library(sp)
+library(sf)
+library(rgdal)
+library(rgeos)
+library(RColorBrewer)
+library(leaflet)
+library(leaflet.extras)
+library(ggplot2)
+#library(tidygraph)
+#library(ggraph)
+```
+
+# Set working directory and import data
+Define activity, household, and person variables.
+
+```{r wd}
+# if not working, make sure it's downloaded from iCloud
+
+household   <- readRDS("/Users/sburtner/Documents/AAG2019/CHTS/CHTS_HOUSEHOLD_2018-02-27.rds")
+activity    <- readRDS("/Users/sburtner/Documents/AAG2019/CHTS/CHTS_ACTIVITY_2018-02-27.rds")
+place       <- readRDS("/Users/sburtner/Documents/AAG2019/CHTS/CHTS_PLACE_2018-02-27.rds")
+person      <- readRDS("/Users/sburtner/Documents/AAG2019/CHTS/CHTS_PERSON_2018-02-27.rds")
+```
+
+# Only maps needed
+```{r onlymaps}
+# Map LA neighborhoods
+lahoods <- geojsonio::geojson_read("/Users/sburtner/Documents/AAG2019/la_hoods_2013.geojson",
+                                   what = "sp")
+
+lahoods_cent <- data.frame(gCentroid(lahoods, byid = TRUE)) %>%
+    mutate(name = lahoods$name)
+```
+
+
+```{r hhh}
+#write.csv(household, "/Users/sburtner/Documents/AAG2019/household.csv")
+
+# Bring in households that are in LA neighborhoods
+# (Prototype in ArcMap, takes a moment to read in)
+#la_hh   <- rgdal::readOGR("/Users/sburtner/Documents/AAG2019/la_hh", layer = "la_hh")
+#lb_hh   <- rgdal::readOGR("/Users/sburtner/Documents/AAG2019/long_beach_hh", layer = "long_beach_hh")
+
+
+#la_hh_clean <- la_hh %>%
+#    select(SAMPN, HLAT, HLON, ILANG, CTFIP, HHSIZ, AREA, HCITY, HZIP, HSTAT, HCTRACT)
+
+# Map Long Beach neighborhoods
+#lbhoods <- rgdal::readOGR("/Users/sburtner/Documents/AAG2019/lb_sj", layer = "long_beach_sj")
+
+# Map LA neighborhoods
+lahoods <- geojsonio::geojson_read("/Users/sburtner/Documents/AAG2019/la_hoods_2013.geojson",
+                                   what = "sp")
+
+#catracts <- rgdal::readOGR("/Users/sburtner/Documents/AAG2019/gz_2010_06_140_00_500k", layer = "gz_2010_06_140_00_500k")
+
+#latracts <- catracts[which(catracts$COUNTY == "037" | catracts$COUNTY == "059"), ]
+
+pal0 <- colorFactor("Paired", lahoods$name)
+
+lahoods_cent <- data.frame(gCentroid(lahoods, byid = TRUE)) %>%
+    mutate(name = lahoods$name)
+                           
+leaflet(lahoods) %>%
+    #addProviderTiles(providers$CartoDB.DarkMatterNoLabels) %>%
+    addPolygons(stroke = TRUE, color = "white", weight = 1, opacity = 0.8,
+                fillOpacity = 0.8, fillColor = ~pal0(name)) %>%
+    #addLabelOnlyMarkers(lng = lahoods_cent$x, lat = lahoods_cent$y, label = lahoods_cent$name,
+    #                    labelOptions = labelOptions(noHide = TRUE, direction = 'top', textOnly = TRUE, style = list("color" = "white", "font-size" = "8px"))) %>%
+    #addLegend(pal = ~pal1(name), values = lahoods_cent$name, group = "circles",
+    #          position = "bottomright", title = "Neighborhoods of Los Angeles & Orange County") %>%
+    setView(-118.2478, 33.94895, 9)
+```
+
+# Clean person and household data
+```{r per}
+person_clean <- person %>%
+    mutate(RACE = if_else(RACE == "American indian or Alaska native", "American Indian or Alaska Native", RACE)) %>%
+    mutate(RACE = if_else(RACE == "Asian (Asian indian, Japanese, Chinese, Korean, Filipino, Vietnamese)", "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)", RACE)) %>%
+    mutate(RACE = if_else(RACE == "DK", "Don't know", RACE)) %>%
+    mutate(RACE = if_else(RACE == "RF", "Refused", RACE)) %>%
+    mutate(RACE = if_else(HISP == "YES", "Hispanic", RACE)) %>%
+    mutate(AGE = if_else(AGE == "DK", "Don't know", AGE)) %>%
+    mutate(AGE = if_else(AGE == "RF", "Refused", AGE)) %>%
+    dplyr::select(SAMPN, PERNO, GEND, RELAT, AGE, RACE) # Race_Other used to add specificity to race
+```
+
+
+# Clean place, activity, and household data
+```{r pla}
+place_clean <- place %>%
+    dplyr::select(SAMPN, PERNO, PLANO, MODE, PNAME, RouteDistance, CITY, STATE, ZIP, XCORD, YCORD,
+           starts_with("ARR_"), starts_with("DEP_"), ends_with("DUR"), ends_with("DIST")) %>%
+    mutate(RouteDistance = if_else(is.na(RouteDistance), 0, RouteDistance)) %>%
+    mutate(TRIPDIST = if_else(is.na(TRIPDIST), 0, TRIPDIST))
+
+activity_clean <- activity %>%
+    dplyr::select(SAMPN, PERNO, PLANO, ACTNO, APURP, STIME, ETIME) %>%
+    mutate(ETIME2 = as.POSIXct(ETIME, format = "%H:%M")) %>%
+    mutate(STIME2 = as.POSIXct(STIME, format = "%H:%M")) %>%
+    mutate(ACTDUR2 = (ETIME2 - STIME2)/60) %>% # in minutes
+    mutate(ACTDUR2 = ifelse(ACTDUR2 < 0, ((as.POSIXct("24:00", format = "%H:%M") - STIME2) +
+                                              (ETIME2 - as.POSIXct("00:00", format = "%H:%M")))/60, ACTDUR2)) %>%
+    dplyr::select(-STIME2, -ETIME2)
+
+household_clean <- household %>%
+    mutate(DOW = if_else(DOW == "hursday", "Thursday", DOW)) %>%
+    dplyr::select(SAMPN, HLAT, HLON, HCITY, HSTAT, HZIP, ILANG, CTFIP, HHSIZ, INCOM, DOW)
+
+household_clean_la <- household_clean %>%
+    filter(CTFIP == "LOS ANGELES" | CTFIP == "ORANGE")
+
+# Use Long Beach information for now
+#lb_hh_clean <- as.data.frame(lb_hh) %>%
+#    select(SAMPN, HLAT, HLON, HCITY, HSTAT, HZIP, ILANG, CTFIP, HHSIZ, INCOM) %>% # lots more variables
+#    mutate(SAMPN = as.numeric(SAMPN))
+
+# Look at just one individual
+```
+
+# Join all of the activity data
+```{r travel}
+# travel <- left_join(person_clean, place_clean, by = c("SAMPN", "PERNO")) %>%
+#     left_join(activity_clean, by = c("SAMPN", "PERNO", "PLANO")) %>%
+#     left_join(household_clean, by = c("SAMPN"))
+
+la_travel <- left_join(person_clean, place_clean, by = c("SAMPN", "PERNO")) %>%
+    left_join(activity_clean, by = c("SAMPN", "PERNO", "PLANO")) %>%
+    right_join(household_clean_la, by = c("SAMPN")) %>%
+    filter(!(RACE %in% c("Refused", "Other, specify", "Don't know", NA))) %>%
+    filter(!(is.na(PLANO)))
+
+#write.csv(la_travel, file = "/Users/sburtner/Documents/AAG2019/la_travel_AAG.csv", row.names = FALSE)
+```
+
+
+# Initial statistics on cleaned data
+
+# Data on travel lengths
+```{r, tl}
+la_race_summary <- la_travel %>%
+    dplyr::select(SAMPN, PERNO, RACE) %>%
+    distinct(SAMPN, PERNO, RACE) %>%
+    summarise(`Hispanic` = sum(RACE == "Hispanic"),
+              `White alone` = sum(RACE == "White"),
+              `Black or African American alone` = sum(RACE == "Black or African American"),
+              `American Indian and Alaska Native alone` = sum(RACE == "American Indian or Alaska Native"),
+              `Asian alone` = sum(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)"),
+              `Native Hawaiian and Other Pacific Islander alone` = sum(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)"),
+              `Total` = n())
+
+la_pop_summary <- la_travel %>%
+    dplyr::select(SAMPN, PERNO, CTFIP, AGE, GEND, RACE) %>%
+    mutate(AGE = as.numeric(AGE)) %>%
+    filter(!is.na(AGE)) %>%
+    distinct() %>%
+    group_by(CTFIP) %>%
+    summarise(`Age < 5` = sum(AGE < 5),
+              `Age < 18` = sum(AGE < 18),
+              `Age >= 65` = sum(AGE >= 65),
+              `Percent women` = sum(GEND == "FEMALE"),
+              `Hispanic` = sum(RACE == "Hispanic"),
+              `White alone` = sum(RACE == "White"),
+              `Black or African American alone` = sum(RACE == "Black or African American"),
+              `American Indian and Alaska Native alone` = sum(RACE == "American Indian or Alaska Native"),
+              `Asian alone` = sum(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)"),
+              `Native Hawaiian and Other Pacific Islander alone` = sum(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)"),
+              `Total` = n()) %>%
+    mutate_if(is.numeric, funs(round(./Total*100, 1)))
+
+la_gend_summary <- la_travel %>%
+   dplyr::select(SAMPN, PERNO, RACE, GEND) %>%
+   distinct() %>%
+   group_by(RACE) %>%
+   summarise(`Number of women` = sum(GEND == "FEMALE"),
+             `Number of men` = sum(GEND == "MALE"),
+             `Total` = n()) %>%
+   arrange(desc(`Total`))
+
+la_age_summary <- la_travel %>%
+   dplyr::select(SAMPN, PERNO, RACE, AGE) %>%
+   distinct() %>%
+   mutate(AGE = as.numeric(AGE)) %>%
+   filter(!is.na(AGE)) %>%
+   group_by(RACE) %>%
+   summarise(`Under the age of 5` = sum(AGE < 5),
+             `Age 5-17` = sum(AGE >= 5 & AGE < 18),
+             `Age 18-24` = sum(AGE >= 18 & AGE < 25),
+             `Age 25-44` = sum(AGE >= 25 & AGE < 45),
+             `Age 45-64` = sum(AGE >= 45 & AGE < 65),
+             `Over the age of 65` = sum(AGE >= 65),
+             `Total` = n()) %>%
+   arrange(desc(`Total`))
+
+
+la_trip_summary <- la_travel %>%
+    group_by(SAMPN, PERNO) %>%
+    mutate(total_trip_dist = sum(TRIPDIST)) %>%
+    mutate(num_places = max(PLANO)) %>%
+    ungroup() %>%
+    group_by(RACE) %>%
+    summarise(`Average number of trips` = mean(num_places),
+              `Average total trip distance` = mean(total_trip_dist))
+
+# pick out some representative paths (highs and lows)
+# run simple statistic test (ANOVA)
+# make table neighborhoods
+# can generate table for neighborhood from general trend
+```
+
+# Create neighood shapefile with LA travel data attached
+```{r desc}
+la_spdf <- SpatialPointsDataFrame(dplyr::select(la_travel, XCORD, YCORD), la_travel,
+                                   proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+city_set <- over(la_spdf, lahoods)
+
+la_spdf$label <- city_set$name
+```
+
+# Make summary about geometries
+```{r geodata}
+proj_lahoods <- spTransform(lahoods, CRSobj = CRS("+proj=aea +lat_1=34 +lat_2=40.5 +lat_0=0 +lon_0=-120 +x_0=0 +y_0=-4000000 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+
+totalarea <- gArea(proj_lahoods)/1000000
+#sum(totalarea)
+#mean(totalarea)
+```
+
+```{r mostintegrated}
+# Most integrated and segregated neighborhoods
+la_nsp <- as.data.frame(la_spdf) %>%
+    dplyr::select(SAMPN, PERNO, RACE, label) %>%
+    distinct() %>%
+    group_by(label) %>%
+    dplyr::summarise(`White` = sum(RACE == "White"),
+              `Hispanic` = sum(RACE == "Hispanic"),
+              `Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)` = sum(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)"),
+              `Black or African American` = sum(RACE == "Black or African American"),
+              `Native Hawaiian or Pacific Islander` = sum(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)"),
+              `American Indian or Alaska Native` = sum(RACE == "American Indian or Alaska Native")
+              ) %>%
+    mutate(total = rowSums(.[2:ncol(.)])) %>%
+    mutate_if(is.numeric, funs(round(./total*100, 2))) %>%
+    dplyr::select(-total) %>%
+    arrange(desc( `White`))
+    #gather("Race", "num_visits", 2:ncol(.)) %>%
+    #spread(Neighborhood, num_visits)
+
+most_integrate <- la_nsp %>%
+    dplyr::select(-`American Indian or Alaska Native`, -`Native Hawaiian or Pacific Islander`) %>%
+    mutate(WH_diff = (White - Hispanic)^2) %>%
+    mutate(WA_diff = (White - `Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)`)^2) %>%
+    mutate(WB_diff = (White - `Black or African American`)^2) %>%
+    mutate(HA_diff = (Hispanic - `Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)`)^2) %>%
+    mutate(HB_diff = (Hispanic - `Black or African American`)^2) %>%
+    mutate(AB_diff = (`Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)` - `Black or African American`)^2) %>%
+    mutate(totaldiff = sqrt(WH_diff + WA_diff + WB_diff + HA_diff + HB_diff + AB_diff)) %>%
+    dplyr::select(-ends_with("_diff")) %>%
+    arrange(totaldiff)
+```
+
+```{r resres}
+bins <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+
+##la_hh_wr <- lahoods[lahoods$name %in% la_nsp$Neighborhood[la_nsp$White > 75], ]
+##lahoods_cent_wr <- lahoods_cent[lahoods_cent$name %in% la_nsp$Neighborhood[la_nsp$White > 75], ]
+
+##la_hh_hr <- lahoods[lahoods$name %in% la_nsp$Neighborhood[la_nsp$Hispanic > 75], ]
+
+palr <- colorBin("YlOrRd", domain = la_nsp$White, bins = bins)
+
+leaflet(lahoods) %>%
+    #addProviderTiles(providers$CartoDB.DarkMatterNoLabels) %>%
+    addPolygons(stroke = TRUE, color = "white", weight = 1, opacity = 0.8,
+                fillOpacity = 0.8, fillColor = ~palr(la_nsp$`Black or African American`)) %>%
+    #addLabelOnlyMarkers(lng = lahoods_cent_hr$x, lat = lahoods_cent_hr$y, label = lahoods_cent_hr$name,
+    #                    labelOptions = labelOptions(noHide = TRUE, direction = 'top', textOnly = TRUE, style = list("color" = "black", "font-size" = "10px"))) %>%
+    addLegend(pal = palr, values = la_nsp$`Black or African American`, group = "circles",
+              position = "bottomright", title = "Neighborhood Percent Visits - Black or African American") %>%
+    setView(-118.2478, 33.94895, 9)
+```
+
+
+
+# Test mapping LA neighborhoods
+```{r hoods}
+# Create palette to map factor levels to colors
+pal1 <- colorFactor("Paired", lahoods$name)
+
+#pal2 <- colorFactor(palette = "Set2", domain = la_hh_df$RACE, reverse = TRUE)
+pal2 <- colorFactor(palette = c("blue", "green", "purple", "yellow", "orange", "red"),
+                    domain = la_hh_df$RACE)
+
+
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.DarkMatterNoLabels) %>%
+    addPolygons(stroke = TRUE, color = "white", weight = 0.5, opacity = 0.8,
+                fillOpacity = 0.3) %>%#, fillColor = ~pal1(name)) %>%
+    # addCircleMarkers(lng = la_hh_pts$HLON,
+    #                  lat = la_hh_pts$HLAT,
+    #                  #radius = ~la_hh_pts$HHSIZ,
+    #                  radius = 2,
+    #                  color = "BLACK",
+    #                  stroke = FALSE, fillOpacity = 0.9
+    #                  )
+    addCircleMarkers(lng = la_hh_df$HLON,
+                     lat = la_hh_df$HLAT,
+                     #radius = ~la_hh_pts$HHSIZ,
+                     radius = 1.5,
+                     color = pal2(la_hh_df$RACE),
+                     stroke = FALSE, fillOpacity = 1
+                     ) %>%
+    addLegend(pal = pal2, values = ~la_hh_df$RACE, group = "circles",
+              position = "bottomright", title = "Los Angeles & Orange County Households by Race")
+```
+
+# Test mapping using SpatialLinesDataFrame
+## FINAL FOR AAG- SPATIAL NETWORKS
+```{r sldf}
+# Create a line for each individual
+topN <- 500
+
+ai_top <- la_travel %>%
+    filter(RACE == "American Indian or Alaska Native") %>%
+    group_by(SAMPN, PERNO) %>%
+    count() %>%
+    ungroup() %>%
+    #arrange(desc(n)) %>%
+    sample_n(119, replace = FALSE) %>%
+    head(119) %>%
+    left_join(la_travel, by = c("SAMPN", "PERNO")) %>%
+    mutate("ID" = paste0(SAMPN, "_", PERNO)) %>%
+    dplyr::select(ID, XCORD, YCORD)
+
+w_top <- la_travel %>%
+    filter(RACE == "White") %>%
+    group_by(SAMPN, PERNO) %>%
+    count() %>%
+    ungroup() %>%
+   # arrange(desc(n)) %>%
+    sample_n(topN, replace = FALSE) %>%
+    head(topN) %>%
+    left_join(la_travel, by = c("SAMPN", "PERNO")) %>%
+    mutate("ID" = paste0(SAMPN, "_", PERNO)) %>%
+    dplyr::select(ID, XCORD, YCORD)
+
+
+b_top <- la_travel %>%
+    filter(RACE == "Black or African American" ) %>%
+    group_by(SAMPN, PERNO) %>%
+    count() %>%
+    ungroup() %>%
+    #arrange(desc(n)) %>%
+    sample_n(topN, replace = FALSE) %>%
+    head(topN) %>%
+    left_join(la_travel, by = c("SAMPN", "PERNO")) %>%
+    mutate("ID" = paste0(SAMPN, "_", PERNO)) %>%
+    dplyr::select(ID, XCORD, YCORD)
+
+h_top <- la_travel %>%
+    filter(RACE == "Hispanic") %>%
+    group_by(SAMPN, PERNO) %>%
+    count() %>%
+    ungroup() %>%
+    arrange(desc(n)) %>%
+    head(topN) %>%
+    left_join(la_travel, by = c("SAMPN", "PERNO")) %>%
+    mutate("ID" = paste0(SAMPN, "_", PERNO)) %>%
+    dplyr::select(ID, XCORD, YCORD)
+
+a_top <- la_travel %>%
+    filter(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)" ) %>%
+    group_by(SAMPN, PERNO) %>%
+    count() %>%
+    ungroup() %>%
+    #arrange(desc(n)) %>%
+    sample_n(topN, replace = FALSE) %>%
+    head(topN) %>%
+    left_join(la_travel, by = c("SAMPN", "PERNO")) %>%
+    mutate("ID" = paste0(SAMPN, "_", PERNO)) %>%
+    dplyr::select(ID, XCORD, YCORD)
+
+nh_top <- la_travel %>%
+    filter(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)") %>%
+    group_by(SAMPN, PERNO) %>%
+    count() %>%
+    ungroup() %>%
+    #arrange(desc(n)) %>%
+    sample_n(85, replace = FALSE) %>%
+    head(85) %>%
+    left_join(la_travel, by = c("SAMPN", "PERNO")) %>%
+    mutate("ID" = paste0(SAMPN, "_", PERNO)) %>%
+    dplyr::select(ID, XCORD, YCORD)
+
+
+# turn into SpatialLines
+ai_top_split <- lapply(unique(ai_top$ID), function(x) {
+  df = as.matrix(ai_top[ai_top$ID == x, c("XCORD", "YCORD")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+ai_top_lines <- SpatialLines(ai_top_split)
+
+w_top_split <- lapply(unique(w_top$ID), function(x) {
+  df = as.matrix(w_top[w_top$ID == x, c("XCORD", "YCORD")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+w_top_lines <- SpatialLines(w_top_split)
+
+b_top_split <- lapply(unique(b_top$ID), function(x) {
+  df = as.matrix(b_top[b_top$ID == x, c("XCORD", "YCORD")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+b_top_lines <- SpatialLines(b_top_split)
+
+h_top_split <- lapply(unique(h_top$ID), function(x) {
+  df = as.matrix(h_top[h_top$ID == x, c("XCORD", "YCORD")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+h_top_lines <- SpatialLines(h_top_split)
+
+a_top_split <- lapply(unique(a_top$ID), function(x) {
+  df = as.matrix(a_top[a_top$ID == x, c("XCORD", "YCORD")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+a_top_lines <- SpatialLines(a_top_split)
+
+nh_top_split <- lapply(unique(nh_top$ID), function(x) {
+  df = as.matrix(nh_top[nh_top$ID == x, c("XCORD", "YCORD")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+nh_top_lines <- SpatialLines(nh_top_split)
+
+
+m_top <- leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.DarkMatter) %>%
+    #addPolygons(stroke = TRUE, color = "white", weight = 1, opacity = 0.5,
+    #            fillOpacity = 0.5, fillColor = ~pal1(name)) %>%
+    #addPolylines(data = w_top_lines, weight = 1, color = "red", opacity = 0.2) #%>%
+    #addPolylines(data = ai_top_lines, weight = 1, color = "blue", opacity = 0.5)# %>%
+    #addPolylines(data = a_top_lines, weight = 1, color = "green", opacity = 0.5)# %>%
+    #addPolylines(data = b_top_lines, weight = 1, color = "purple", opacity = 0.5) #%>%
+    addPolylines(data = h_top_lines, weight = 1, color = "yellow", opacity = 0.5) #%>%
+    #addPolylines(data = nh_top_lines, weight = 1, color = "orange", opacity = 0.5)
+
+
+m_top %>% setView(-118.2478, 33.94895, 9)
+
+```
+
+
+
+# Create network of networks
+
+```{r netnet}
+la_nnames <- as.data.frame(la_spdf) %>%
+    select(label) %>%
+    distinct() %>%
+    arrange(label) %>%
+    rowid_to_column("id")
+
+la_nn_geo <- as.data.frame(la_spdf) %>%
+    select(SAMPN, PERNO, RACE, PLANO, label) %>%
+    group_by(SAMPN, PERNO, RACE) %>%
+    mutate(from = label) %>%
+    mutate(to = lead(label)) %>%
+    mutate(to = if_else(is.na(to), from, to)) %>%
+    filter(!is.na(from)) %>%
+    select(-label) %>%
+    group_by(SAMPN, PERNO, RACE) %>%
+    filter(PLANO != max(PLANO)) %>%
+    select(-PLANO) %>%
+    group_by(RACE, from, to) %>%
+    summarise(weight = n()) %>%
+    ungroup() %>%
+    filter(weight > 1)
+
+la_nn <- la_nn_geo %>%
+    left_join(la_nnames, by = c("to" = "label")) %>%
+    select(-to) %>%
+    rename("to" = "id") %>%
+    left_join(la_nnames, by = c("from" = "label")) %>%
+    select(-from) %>%
+    rename("from" = "id")
+
+# Attach centroid to neighborhood
+lahoods_cent <- SpatialPointsDataFrame(gCentroid(lahoods, byid = TRUE),
+                                       lahoods@data, match.ID = FALSE)
+
+lahoods_centdf <- as(lahoods_cent, "data.frame") %>%
+    select(name, x, y) %>%
+    right_join(la_nnames, by = c("name" = "label"))
+
+la_fn_geo <- left_join(la_nn_geo, lahoods_centdf, by = c("to" = "name")) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_centdf, by = c("from" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y) %>%
+    select(-starts_with("id")) %>%
+    rowid_to_column("rowid") %>%
+    gather(xnode, lng, c(XCORD_FROM, XCORD_TO)) %>%
+    gather(ynode, lat, c(YCORD_FROM, YCORD_TO)) %>%
+    mutate(znode = paste(xnode, ynode, sep = "_")) %>%
+    filter(znode == "XCORD_FROM_YCORD_FROM" |
+               znode == "XCORD_TO_YCORD_TO") %>%
+    select(-xnode, -ynode, -znode, -from, -to)
+```
+
+# METHOD & ANALYSIS
+```{r fullnet}
+la_full_net <- la_nn_geo %>%
+    select(-RACE) %>%
+    group_by(from, to) %>%
+    summarise(weight = sum(weight)) %>%
+    ungroup()
+
+ai_net <- la_nn_geo %>%
+    filter(RACE == "American Indian or Alaska Native") %>%
+    select(-RACE) %>%
+    rename(ai_weight = weight) %>%
+    right_join(la_full_net, by = c("from", "to")) %>%
+    mutate(ai_weight = if_else(is.na(ai_weight), 0, as.numeric(ai_weight)))
+
+nh_net <- la_nn_geo %>%
+    filter(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)") %>%
+    select(-RACE) %>%
+    rename(nh_weight = weight) %>%
+    right_join(la_full_net, by = c("from", "to")) %>%
+    mutate(nh_weight = if_else(is.na(nh_weight), 0, as.numeric(nh_weight)))
+
+b_net <- la_nn_geo %>%
+    filter(RACE ==  "Black or African American" ) %>%
+    select(-RACE) %>%
+    rename(b_weight = weight) %>%
+    right_join(la_full_net, by = c("from", "to")) %>%
+    mutate(b_weight = if_else(is.na(b_weight), 0, as.numeric(b_weight)))
+
+a_net <- la_nn_geo %>%
+    filter(RACE ==  "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)" ) %>%
+    select(-RACE) %>%
+    rename(a_weight = weight) %>%
+    right_join(la_full_net, by = c("from", "to")) %>%
+    mutate(a_weight = if_else(is.na(a_weight), 0, as.numeric(a_weight)))
+
+w_net <- la_nn_geo %>%
+    filter(RACE ==  "White" ) %>%
+    select(-RACE) %>%
+    rename(w_weight = weight) %>%
+    right_join(la_full_net, by = c("from", "to")) %>%
+    mutate(w_weight = if_else(is.na(w_weight), 0, as.numeric(w_weight)))
+
+h_net <- la_nn_geo %>%
+    filter(RACE ==  "Hispanic" ) %>%
+    select(-RACE) %>%
+    rename(h_weight = weight) %>%
+    right_join(la_full_net, by = c("from", "to")) %>%
+    mutate(h_weight = if_else(is.na(h_weight), 0, as.numeric(h_weight)))
+
+# Create totals of all trips
+full_net <- left_join(la_full_net, ai_net, by = c("from", "to")) %>%
+    left_join(nh_net, by = c("from", "to")) %>%
+    left_join(b_net, by = c("from", "to")) %>%
+    left_join(a_net, by = c("from", "to")) %>%
+    left_join(w_net, by = c("from", "to")) %>%
+    left_join(h_net, by = c("from", "to")) %>%
+    select(-ends_with(".x"), -ends_with(".y"))
+
+full_net_res <- full_net %>%
+    summarise_if(is.numeric, sum)
+    #summarise_at(vars(ends_with("_weight")), funs(sum(.)/sum(weight)))
+
+full_full_net <- left_join(la_full_net, ai_net, by = c("from", "to")) %>%
+    left_join(nh_net, by = c("from", "to")) %>%
+    left_join(b_net, by = c("from", "to")) %>%
+    left_join(a_net, by = c("from", "to")) %>%
+    left_join(w_net, by = c("from", "to")) %>%
+    left_join(h_net, by = c("from", "to")) %>%
+    select(-ends_with(".x"), -ends_with(".y")) %>%
+    mutate_at(vars(ends_with("_weight")), funs(./weight))
+```
+
+```{r exclude}
+# Why exclude Native American?
+ai_ex <- full_full_net %>%
+    select(from, to, ai_weight) %>%
+    filter(ai_weight > 0) %>%
+    gather("fromto", "hood", from, to)
+
+nh_ex <- full_full_net %>%
+    select(from, to, nh_weight) %>%
+    filter(nh_weight > 0) %>%
+    gather("fromto", "hood", from, to)
+
+# Compared to...
+bl_ex <- full_full_net %>%
+    select(from, to, b_weight) %>%
+    filter(b_weight > 0) %>%
+    gather("fromto", "hood", from, to)
+
+wh_ex <- full_full_net %>%
+    select(from, to, w_weight) %>%
+    filter(w_weight > 0) %>%
+    gather("fromto", "hood", from, to)
+
+hi_ex <- full_full_net %>%
+    select(from, to, h_weight) %>%
+    filter(h_weight > 0) %>%
+    gather("fromto", "hood", from, to)
+
+as_ex <- full_full_net %>%
+    select(from, to, a_weight) %>%
+    filter(a_weight > 0) %>%
+    gather("fromto", "hood", from, to)
+
+length(unique(ai_ex$hood))
+length(unique(nh_ex$hood))
+length(unique(bl_ex$hood))
+length(unique(wh_ex$hood))
+length(unique(hi_ex$hood))
+length(unique(as_ex$hood))
+```
+
+# Find network overlap
+```{r overlap}
+# White-Black network overlap
+wb_net_overlap <- full_net %>%
+    select(from, to, w_weight, b_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(w_weight > 0 & b_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(w_weight_overlap = w_weight, b_weight_overlap = b_weight) %>%
+    cbind(select(full_net_res, w_weight, b_weight)) %>%
+    mutate(w_weight_overlap = w_weight_overlap/w_weight) %>%
+    mutate(b_weight_overlap = b_weight_overlap/b_weight) %>%
+    select(-w_weight, -b_weight)
+
+# White-Native Hawaiian network overlap
+wnh_net_overlap <- full_net %>%
+    select(from, to, w_weight, nh_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(w_weight > 0 & nh_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(w_weight_overlap = w_weight, nh_weight_overlap = nh_weight) %>%
+    cbind(select(full_net_res, w_weight, nh_weight)) %>%
+    mutate(w_weight_overlap = w_weight_overlap/w_weight) %>%
+    mutate(nh_weight_overlap = nh_weight_overlap/nh_weight) %>%
+    select(-w_weight, -nh_weight)
+
+# White-American Indian overlap
+wai_net_overlap <- full_net %>%
+    select(from, to, w_weight, ai_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(w_weight > 0 & ai_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(w_weight_overlap = w_weight, ai_weight_overlap = ai_weight) %>%
+    cbind(select(full_net_res, w_weight, ai_weight)) %>%
+    mutate(w_weight_overlap = w_weight_overlap/w_weight) %>%
+    mutate(ai_weight_overlap = ai_weight_overlap/ai_weight) %>%
+    select(-w_weight, -ai_weight)
+
+# White-Hispanic overlap
+wh_net_overlap <- full_net %>%
+    select(from, to, w_weight, h_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(w_weight > 0 & h_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(w_weight_overlap = w_weight, h_weight_overlap = h_weight) %>%
+    cbind(select(full_net_res, w_weight, h_weight)) %>%
+    mutate(w_weight_overlap = w_weight_overlap/w_weight) %>%
+    mutate(h_weight_overlap = h_weight_overlap/h_weight) %>%
+    select(-w_weight, -h_weight)
+
+# White-Asian overlap
+wa_net_overlap <- full_net %>%
+    select(from, to, w_weight, a_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(w_weight > 0 & a_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(w_weight_overlap = w_weight, a_weight_overlap = a_weight) %>%
+    cbind(select(full_net_res, w_weight, a_weight)) %>%
+    mutate(w_weight_overlap = w_weight_overlap/w_weight) %>%
+    mutate(a_weight_overlap = a_weight_overlap/a_weight) %>%
+    select(-w_weight, -a_weight)
+
+# Black-Native Hawaiian overlap
+bnh_net_overlap <- full_net %>%
+    select(from, to, b_weight, nh_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(b_weight > 0 & nh_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(b_weight_overlap = b_weight, nh_weight_overlap = nh_weight) %>%
+    cbind(select(full_net_res, b_weight, nh_weight)) %>%
+    mutate(b_weight_overlap = b_weight_overlap/b_weight) %>%
+    mutate(nh_weight_overlap = nh_weight_overlap/nh_weight) %>%
+    select(-b_weight, -nh_weight)
+
+# Black-American Indian overlap
+bai_net_overlap <- full_net %>%
+    select(from, to, b_weight, ai_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(b_weight > 0 & ai_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(b_weight_overlap = b_weight, ai_weight_overlap = ai_weight) %>%
+    cbind(select(full_net_res, b_weight, ai_weight)) %>%
+    mutate(b_weight_overlap = b_weight_overlap/b_weight) %>%
+    mutate(ai_weight_overlap = ai_weight_overlap/ai_weight) %>%
+    select(-b_weight, -ai_weight)
+
+# Black-Hispanic overlap
+bh_net_overlap <- full_net %>%
+    select(from, to, b_weight, h_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(b_weight > 0 & h_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(b_weight_overlap = b_weight, h_weight_overlap = h_weight) %>%
+    cbind(select(full_net_res, b_weight, h_weight)) %>%
+    mutate(b_weight_overlap = b_weight_overlap/b_weight) %>%
+    mutate(h_weight_overlap = h_weight_overlap/h_weight) %>%
+    select(-b_weight, -h_weight)
+
+# Black-Asian overlap
+ba_net_overlap <- full_net %>%
+    select(from, to, b_weight, a_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(b_weight > 0 & a_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(b_weight_overlap = b_weight, a_weight_overlap = a_weight) %>%
+    cbind(select(full_net_res, b_weight, a_weight)) %>%
+    mutate(b_weight_overlap = b_weight_overlap/b_weight) %>%
+    mutate(a_weight_overlap = a_weight_overlap/a_weight) %>%
+    select(-b_weight, -a_weight)
+
+# Native Hawaiian-American Indian overlap
+nhai_net_overlap <- full_net %>%
+    select(from, to, nh_weight, ai_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(nh_weight > 0 & ai_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(nh_weight_overlap = nh_weight, ai_weight_overlap = ai_weight) %>%
+    cbind(select(full_net_res, nh_weight, ai_weight)) %>%
+    mutate(nh_weight_overlap = nh_weight_overlap/nh_weight) %>%
+    mutate(ai_weight_overlap = ai_weight_overlap/ai_weight) %>%
+    select(-nh_weight, -ai_weight)
+
+# Native Hawaiian-Hispanic overlap
+nhh_net_overlap <- full_net %>%
+    select(from, to, nh_weight, h_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(nh_weight > 0 & h_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(nh_weight_overlap = nh_weight, h_weight_overlap = h_weight) %>%
+    cbind(select(full_net_res, nh_weight, h_weight)) %>%
+    mutate(nh_weight_overlap = nh_weight_overlap/nh_weight) %>%
+    mutate(h_weight_overlap = h_weight_overlap/h_weight) %>%
+    select(-nh_weight, -h_weight)
+
+# Native Hawaiian-Asian overlap
+nha_net_overlap <- full_net %>%
+    select(from, to, nh_weight, a_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(nh_weight > 0 & a_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(nh_weight_overlap = nh_weight, a_weight_overlap = a_weight) %>%
+    cbind(select(full_net_res, nh_weight, a_weight)) %>%
+    mutate(nh_weight_overlap = nh_weight_overlap/nh_weight) %>%
+    mutate(a_weight_overlap = a_weight_overlap/a_weight) %>%
+    select(-nh_weight, -a_weight)
+
+# American Indian-Hispanic overlap
+aih_net_overlap <- full_net %>%
+    select(from, to, ai_weight, h_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(ai_weight > 0 & h_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(ai_weight_overlap = ai_weight, h_weight_overlap = h_weight) %>%
+    cbind(select(full_net_res, ai_weight, h_weight)) %>%
+    mutate(ai_weight_overlap = ai_weight_overlap/ai_weight) %>%
+    mutate(h_weight_overlap = h_weight_overlap/h_weight) %>%
+    select(-ai_weight, -h_weight)
+
+# American Indian-Asian overlap
+aia_net_overlap <- full_net %>%
+    select(from, to, ai_weight, a_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(ai_weight > 0 & a_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(ai_weight_overlap = ai_weight, a_weight_overlap = a_weight) %>%
+    cbind(select(full_net_res, ai_weight, a_weight)) %>%
+    mutate(ai_weight_overlap = ai_weight_overlap/ai_weight) %>%
+    mutate(a_weight_overlap = a_weight_overlap/a_weight) %>%
+    select(-ai_weight, -a_weight)
+
+# Hispanic-Asian overlap
+ha_net_overlap <- full_net %>%
+    select(from, to, h_weight, a_weight) %>%
+    #mutate(overlap = pmin(w_weight, b_weight))
+    filter(h_weight > 0 & a_weight > 0) %>%
+    summarise_at(vars(ends_with("weight")), funs(sum(.))) %>%
+    rename(h_weight_overlap = h_weight, a_weight_overlap = a_weight) %>%
+    cbind(select(full_net_res, h_weight, a_weight)) %>%
+    mutate(h_weight_overlap = h_weight_overlap/h_weight) %>%
+    mutate(a_weight_overlap = a_weight_overlap/a_weight) %>%
+    select(-h_weight, -a_weight)
+```
+
+# Construct network overlap matrix
+```{r}
+net_overlap_matrix <- rbind(c(1, wb_net_overlap$w_weight_overlap, wnh_net_overlap$w_weight_overlap,
+                              wai_net_overlap$w_weight_overlap, wh_net_overlap$w_weight_overlap,
+                              wa_net_overlap$w_weight_overlap),
+                            c(wb_net_overlap$b_weight_overlap, 1, bnh_net_overlap$b_weight_overlap,
+                              bai_net_overlap$b_weight_overlap, bh_net_overlap$b_weight_overlap,
+                              ba_net_overlap$b_weight_overlap),
+                            c(wnh_net_overlap$nh_weight_overlap, bnh_net_overlap$nh_weight_overlap,
+                              1, nhai_net_overlap$nh_weight_overlap, nhh_net_overlap$nh_weight_overlap,
+                              nha_net_overlap$nh_weight_overlap),
+                            c(wai_net_overlap$ai_weight_overlap, bai_net_overlap$ai_weight_overlap,
+                              nhai_net_overlap$ai_weight_overlap, 1, aih_net_overlap$ai_weight_overlap,
+                              aia_net_overlap$ai_weight_overlap),
+                            c(wh_net_overlap$h_weight_overlap, bh_net_overlap$h_weight_overlap,
+                              nhh_net_overlap$h_weight_overlap, aih_net_overlap$h_weight_overlap,
+                              1, ha_net_overlap$h_weight_overlap),
+                            c(wa_net_overlap$a_weight_overlap, ba_net_overlap$a_weight_overlap,
+                              nha_net_overlap$a_weight_overlap, aia_net_overlap$a_weight_overlap,
+                              ha_net_overlap$a_weight_overlap, 1)
+                            )
+
+colnames(net_overlap_matrix) <- c("White", "Black or African American",
+                                  "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)",
+                                  "American Indian or Alaska Native", "Hispanic",
+                                  "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)")
+rownames(net_overlap_matrix) <- c("White", "Black or African American",
+                                  "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)",
+                                  "American Indian or Alaska Native", "Hispanic",
+                                  "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)")
+
+View(as.data.frame(net_overlap_matrix))
+```
+
+# VISUALIZATIONS
+```{r finviz}
+# All lines
+# Add lat and long
+
+full_geo <- left_join(full_full_net, lahoods_centdf, by = c("to" = "name")) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_centdf, by = c("from" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y) %>%
+    select(-starts_with("id.")) %>%
+    rowid_to_column("rowid") %>%
+    gather(xnode, lng, c(XCORD_FROM, XCORD_TO)) %>%
+    gather(ynode, lat, c(YCORD_FROM, YCORD_TO)) %>%
+    mutate(znode = paste(xnode, ynode, sep = "_")) %>%
+    filter(znode == "XCORD_FROM_YCORD_FROM" |
+               znode == "XCORD_TO_YCORD_TO") %>%
+    select(-xnode, -ynode, -znode, -from, -to)
+
+full_split <- lapply(unique(full_geo$rowid), function(x) {
+  df = as.matrix(full_geo[full_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+full_fn_lines <- SpatialLinesDataFrame(sl = SpatialLines(full_split),
+                                       data = distinct(select(full_geo, rowid, weight)))
+
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+                fillOpacity = 0.1) %>%
+    setView(-118.2478, 33.94895, 9) %>%
+    addPolylines(data = full_fn_lines, color = "black", opacity = 0.9, weight = log(full_fn_lines$weight))
+```
+
+
+# Individual networks
+````{r ai_net}
+ai_geo <- left_join(ai_net, lahoods_centdf, by = c("to" = "name")) %>%
+    filter(ai_weight > 0) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_centdf, by = c("from" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y) %>%
+    select(-starts_with("id.")) %>%
+    rowid_to_column("rowid") %>%
+    gather(xnode, lng, c(XCORD_FROM, XCORD_TO)) %>%
+    gather(ynode, lat, c(YCORD_FROM, YCORD_TO)) %>%
+    mutate(znode = paste(xnode, ynode, sep = "_")) %>%
+    filter(znode == "XCORD_FROM_YCORD_FROM" |
+               znode == "XCORD_TO_YCORD_TO") %>%
+    select(-xnode, -ynode, -znode, -from, -to)
+
+ai_split <- lapply(unique(ai_geo$rowid), function(x) {
+  df = as.matrix(ai_geo[ai_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+ai_lines <- SpatialLinesDataFrame(sl = SpatialLines(ai_split),
+                                  data = distinct(select(ai_geo, rowid, ai_weight)))
+
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+                fillOpacity = 0.1) %>%
+    setView(-118.2478, 33.94895, 9) %>%
+    addPolylines(data = ai_lines, color = "red", opacity = 0.5, weight = log(ai_lines$ai_weight*100))
+```
+
+
+```{r nh_net}
+nh_geo <- left_join(nh_net, lahoods_centdf, by = c("to" = "name")) %>%
+    filter(nh_weight > 0) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_centdf, by = c("from" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y) %>%
+    select(-starts_with("id.")) %>%
+    rowid_to_column("rowid") %>%
+    gather(xnode, lng, c(XCORD_FROM, XCORD_TO)) %>%
+    gather(ynode, lat, c(YCORD_FROM, YCORD_TO)) %>%
+    mutate(znode = paste(xnode, ynode, sep = "_")) %>%
+    filter(znode == "XCORD_FROM_YCORD_FROM" |
+               znode == "XCORD_TO_YCORD_TO") %>%
+    select(-xnode, -ynode, -znode, -from, -to)
+
+nh_split <- lapply(unique(nh_geo$rowid), function(x) {
+  df = as.matrix(nh_geo[nh_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+nh_lines <- SpatialLinesDataFrame(sl = SpatialLines(nh_split),
+                                  data = distinct(select(nh_geo, rowid, nh_weight)))
+
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+                fillOpacity = 0.1) %>%
+    setView(-118.2478, 33.94895, 9) %>%
+    addPolylines(data = nh_lines, color = "red", opacity = 0.5, weight = log(nh_lines$nh_weight*100))
+```
+
+
+````{r b_net}
+b_geo <- left_join(b_net, lahoods_centdf, by = c("to" = "name")) %>%
+    filter(b_weight > 0) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_centdf, by = c("from" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y) %>%
+    select(-starts_with("id.")) %>%
+    rowid_to_column("rowid") %>%
+    gather(xnode, lng, c(XCORD_FROM, XCORD_TO)) %>%
+    gather(ynode, lat, c(YCORD_FROM, YCORD_TO)) %>%
+    mutate(znode = paste(xnode, ynode, sep = "_")) %>%
+    filter(znode == "XCORD_FROM_YCORD_FROM" |
+               znode == "XCORD_TO_YCORD_TO") %>%
+    select(-xnode, -ynode, -znode, -from, -to)
+
+b_split <- lapply(unique(b_geo$rowid), function(x) {
+  df = as.matrix(b_geo[b_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+b_lines <- SpatialLinesDataFrame(sl = SpatialLines(b_split),
+                                 data = distinct(select(b_geo, rowid, b_weight)))
+
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+                fillOpacity = 0.1) %>%
+    setView(-118.2478, 33.94895, 9) %>%
+    addPolylines(data = b_lines, color = "black", opacity = 0.4, weight = log(b_lines$b_weight))
+```
+
+````{r h_net}
+h_geo <- left_join(h_net, lahoods_centdf, by = c("to" = "name")) %>%
+    filter(h_weight > 0) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_centdf, by = c("from" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y) %>%
+    select(-starts_with("id.")) %>%
+    rowid_to_column("rowid") %>%
+    gather(xnode, lng, c(XCORD_FROM, XCORD_TO)) %>%
+    gather(ynode, lat, c(YCORD_FROM, YCORD_TO)) %>%
+    mutate(znode = paste(xnode, ynode, sep = "_")) %>%
+    filter(znode == "XCORD_FROM_YCORD_FROM" |
+               znode == "XCORD_TO_YCORD_TO") %>%
+    select(-xnode, -ynode, -znode, -from, -to)
+
+h_split <- lapply(unique(h_geo$rowid), function(x) {
+  df = as.matrix(h_geo[h_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+h_lines <- SpatialLinesDataFrame(sl = SpatialLines(h_split),
+                                 data = distinct(select(h_geo, rowid, h_weight)))
+
+
+# For Alan 1-28
+#palpurp <- colorNumeric(palette = "YlGnBu", domain = h_lines$h_weight)
+
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+    #addPolygons(stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+    #            fillOpacity = 0.1) %>%
+    setView(-118.2478, 33.94895, 9) %>%
+    addPolylines(data = h_lines, color = "purple", opacity = 0.5, weight = log(h_lines$h_weight))# %>%
+    #addLegend(pal = palpurp, values = ~h_lines$h_weight,
+    #          position = "bottomright", title = "Los Angeles & Orange County Households by Race")
+```
+
+````{r a_net}
+a_geo <- left_join(a_net, lahoods_centdf, by = c("to" = "name")) %>%
+    filter(a_weight > 0) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_centdf, by = c("from" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y) %>%
+    select(-starts_with("id.")) %>%
+    rowid_to_column("rowid") %>%
+    gather(xnode, lng, c(XCORD_FROM, XCORD_TO)) %>%
+    gather(ynode, lat, c(YCORD_FROM, YCORD_TO)) %>%
+    mutate(znode = paste(xnode, ynode, sep = "_")) %>%
+    filter(znode == "XCORD_FROM_YCORD_FROM" |
+               znode == "XCORD_TO_YCORD_TO") %>%
+    select(-xnode, -ynode, -znode, -from, -to)
+
+a_split <- lapply(unique(a_geo$rowid), function(x) {
+  df = as.matrix(a_geo[a_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+a_lines <- SpatialLinesDataFrame(sl = SpatialLines(a_split),
+                                 data = distinct(select(a_geo, rowid, a_weight)))
+
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+                fillOpacity = 0.1) %>%
+    setView(-118.2478, 33.94895, 9) %>%
+    addPolylines(data = a_lines, color = "black", opacity = 0.5, weight = log(a_lines$a_weight))
+```
+
+````{r w_net}
+w_geo <- left_join(w_net, lahoods_centdf, by = c("to" = "name")) %>%
+    filter(w_weight > 0) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_centdf, by = c("from" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y) %>%
+    select(-starts_with("id.")) %>%
+    rowid_to_column("rowid") %>%
+    gather(xnode, lng, c(XCORD_FROM, XCORD_TO)) %>%
+    gather(ynode, lat, c(YCORD_FROM, YCORD_TO)) %>%
+    mutate(znode = paste(xnode, ynode, sep = "_")) %>%
+    filter(znode == "XCORD_FROM_YCORD_FROM" |
+               znode == "XCORD_TO_YCORD_TO") %>%
+    select(-xnode, -ynode, -znode, -from, -to)
+
+w_split <- lapply(unique(a_geo$rowid), function(x) {
+  df = as.matrix(a_geo[a_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+w_lines <- SpatialLinesDataFrame(sl = SpatialLines(w_split),
+                                 data = distinct(select(w_geo, rowid, w_weight)))
+
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+                fillOpacity = 0.1) %>%
+    setView(-118.2478, 33.94895, 9) %>%
+    addPolylines(data = w_lines, color = "black", opacity = 0.5, weight = log(w_lines$w_weight)) #%>%
+    #addPolylines(data = b_lines, color = "purple", opacity = 0.8, weight = log(b_lines$b_weight)) #%>%
+    #addPolylines(data = nh_lines, color = "black", opacity = 0.8, weight = log(nh_lines$nh_weight)) %>%
+    #addPolylines(data = ai_lines, color = "steelblue", opacity = 0.8, weight = log(ai_lines$ai_weight)) #%>%
+    #addPolylines(data = h_lines, color = "green", opacity = 0.5, weight = log(h_lines$h_weight)) #%>%
+    #addPolylines(data = a_lines, color = "blue", opacity = 0.4, weight = log(a_lines$a_weight))
+```
+
+
+# For network statistics, vertices, directed, loops, etc.
+```{r ergm}
+library(network)
+
+h_net_stat <- network(la_nn_geo %>% filter(RACE == "Hispanic") %>% select(-RACE),
+                  vertex.attrnames = la_nnames, matrix.type = "edgelist",
+                  directed = TRUE, loops = TRUE, ignore.eval = FALSE)
+
+w_net_stat <- network(la_nn_geo %>% filter(RACE == "White") %>% select(-RACE),
+                  vertex.attrnames = la_nnames, matrix.type = "edgelist",
+                  directed = TRUE, loops = TRUE, ignore.eval = FALSE)
+
+a_net_stat <- network(la_nn_geo %>% filter(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)") %>% select(-RACE),
+                  vertex.attrnames = la_nnames, matrix.type = "edgelist",
+                  directed = TRUE, loops = TRUE, ignore.eval = FALSE)
+
+b_net_stat <- network(la_nn_geo %>% filter(RACE == "Black or African American") %>% select(-RACE),
+                  vertex.attrnames = la_nnames, matrix.type = "edgelist",
+                  directed = TRUE, loops = TRUE, ignore.eval = FALSE)
+
+ai_net_stat <- network(la_nn_geo %>% filter(RACE == "American Indian or Alaska Native") %>% select(-RACE),
+                  vertex.attrnames = la_nnames, matrix.type = "edgelist",
+                  directed = TRUE, loops = TRUE, ignore.eval = FALSE)
+
+nh_net_stat <- network(la_nn_geo %>% filter(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)") %>% select(-RACE),
+                  vertex.attrnames = la_nnames, matrix.type = "edgelist",
+                  directed = TRUE, loops = TRUE, ignore.eval = FALSE)
+
+network::summary.network(h_net_stat)
+
+# IGRAPH portion
+detach(package:network)
+library(igraph)
+
+# Create igraphs
+w_inet <- graph_from_edgelist(as.matrix(la_nn_geo %>% filter(RACE == "White") %>% select(-RACE, -weight)), directed = TRUE)
+w_inet$weight <- la_nn_geo %>% filter(RACE == "White") %>% select(weight)
+
+b_inet <- graph_from_edgelist(as.matrix(la_nn_geo %>% filter(RACE == "Black or African American") %>% select(-RACE, -weight)), directed = TRUE)
+b_inet$weight <- la_nn_geo %>% filter(RACE == "Black or African American") %>% select(weight)
+
+nh_inet <- graph_from_edgelist(as.matrix(la_nn_geo %>% filter(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)") %>% select(-RACE, -weight)), directed = TRUE)
+nh_inet$weight <- la_nn_geo %>% filter(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)") %>% select(weight)
+
+ai_inet <- graph_from_edgelist(as.matrix(la_nn_geo %>% filter(RACE == "American Indian or Alaska Native") %>% select(-RACE, -weight)), directed = TRUE)
+ai_inet$weight <- la_nn_geo %>% filter(RACE == "American Indian or Alaska Native") %>% select(weight)
+
+h_inet <- graph_from_edgelist(as.matrix(la_nn_geo %>% filter(RACE == "Hispanic") %>% select(-RACE, -weight)), directed = TRUE)
+h_inet$weight <- la_nn_geo %>% filter(RACE == "Hispanic") %>% select(weight)
+
+a_inet <- graph_from_edgelist(as.matrix(la_nn_geo %>% filter(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)") %>% select(-RACE, -weight)), directed = TRUE)
+a_inet$weight <- la_nn_geo %>% filter(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)") %>% select(weight)
+
+# Calculate diameter, reciprocity, and transitivity
+diameter(w_inet, directed = TRUE, unconnected = TRUE)
+reciprocity(w_inet, ignore.loops = TRUE)
+transitivity(w_inet, type = "global")
+
+diameter(b_inet, directed = TRUE, unconnected = TRUE)
+reciprocity(b_inet, ignore.loops = TRUE)
+transitivity(b_inet, type = "global")
+
+diameter(nh_inet, directed = TRUE, unconnected = TRUE)
+reciprocity(nh_inet, ignore.loops = TRUE)
+transitivity(nh_inet, type = "global")
+
+diameter(ai_inet, directed = TRUE, unconnected = TRUE)
+reciprocity(ai_inet, ignore.loops = TRUE)
+transitivity(ai_inet, type = "global")
+
+diameter(h_inet, directed = TRUE, unconnected = TRUE)
+reciprocity(h_inet, ignore.loops = TRUE)
+transitivity(h_inet, type = "global")
+
+diameter(a_inet, directed = TRUE, unconnected = TRUE)
+reciprocity(a_inet, ignore.loops = TRUE)
+transitivity(a_inet, type = "global")
+```
+
+
+```{r resmaps}
+top10mostintegrated <- most_integrate[1:10, "label"]
+top10leastintegrated <- most_integrate[(nrow(most_integrate)-9):nrow(most_integrate), "label"]
+
+lahoods_mostintegrated <- lahoods[lahoods$name %in% top10mostintegrated$label, ]
+lahoods_leastintegrated <- lahoods[lahoods$name %in% top10leastintegrated$label, ]
+
+lahoods_mi_cent <- data.frame(gCentroid(lahoods_mostintegrated, byid = TRUE)) %>%
+    mutate(name = lahoods_mostintegrated$name)
+lahoods_li_cent <- data.frame(gCentroid(lahoods_leastintegrated, byid = TRUE)) %>%
+    mutate(name = lahoods_leastintegrated$name)
+
+#pal0 <- colorFactor("Paired", lahoods_mostintegrated$name)
+                           
+leaflet(lahoods_mostintegrated) %>%
+    addProviderTiles(providers$CartoDB.Positron)  %>%
+    addPolygons(data = lahoods, stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+                fillOpacity = 0.1) %>%
+    addPolygons(data = lahoods_leastintegrated, stroke = TRUE, color = "white", weight = 1, opacity = 1,
+                fillOpacity = 1, fillColor = "red") %>% #fillColor = ~pal0(name)) %>%
+    addPolygons(stroke = TRUE, color = "white", weight = 1, opacity = 1,
+                fillOpacity = 1, fillColor = "green") %>%
+    addLabelOnlyMarkers(lng = lahoods_mi_cent$x, lat = lahoods_mi_cent$y,
+                        label = lahoods_mostintegrated$name,
+                        labelOptions = labelOptions(noHide = TRUE, direction = "left", opacity = 0.75,
+                                                    textOnly = TRUE,
+                                                    style = list("color" = "black", "font-size" = "10px",
+                                                                 "font-family" = "Times New Roman",
+                                                                 "background-color" = "white",
+                                                                 "line-height" = "0.05"))) %>%
+    addLabelOnlyMarkers(lng = lahoods_li_cent$x, lat = lahoods_li_cent$y,
+                        label = lahoods_leastintegrated$name,
+                        labelOptions = labelOptions(noHide = TRUE, direction = "right", opacity = 0.75,
+                                                    textOnly = TRUE,
+                                                    style = list("color" = "black", "font-size" = "10px",
+                                                                 "font-family" = "Times New Roman",
+                                                                 "background-color" = "white",
+                                                                 "line-height" = "0.05"))) %>%
+    #addLegend(pal = ~pal1(name), values = lahoods_cent$name, group = "circles",
+    #          position = "bottomright", title = "Neighborhoods of Los Angeles & Orange County") %>%
+    setView(-118.2478, 33.94895, 9)
+```
+
+
+```{r spatlines}
+# American Indian (ai)
+ai_fn_geo <- la_fn_geo %>%
+    filter(RACE == "American Indian or Alaska Native")
+
+ai_fn_split <- lapply(unique(ai_fn_geo$rowid), function(x) {
+  df = as.matrix(ai_fn_geo[ai_fn_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+ai_fn_lines <- SpatialLines(ai_fn_split)
+
+ai_fn_df <- SpatialLinesDataFrame(ai_fn_lines, ai_fn_geo[, c("rowid", "weight")])
+
+# Asian (a)
+a_fn_geo <- la_fn_geo %>%
+    filter(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)")
+
+a_fn_split <- lapply(unique(a_fn_geo$rowid), function(x) {
+  df = as.matrix(a_fn_geo[a_fn_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+a_fn_lines <- SpatialLines(a_fn_split)
+
+a_fn_df <- SpatialLinesDataFrame(a_fn_lines, a_fn_geo[, c("rowid", "weight")], match.ID = TRUE)
+
+# Hispanic (h)
+h_fn_geo <- la_fn_geo %>%
+    filter(RACE == "Hispanic")
+
+h_fn_split <- lapply(unique(h_fn_geo$rowid), function(x) {
+  df = as.matrix(h_fn_geo[h_fn_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+h_fn_lines <- SpatialLines(h_fn_split)
+
+h_fn_df <- SpatialLinesDataFrame(h_fn_lines, h_fn_geo[, c("rowid", "weight")])
+
+# Black or African American (b)
+b_fn_geo <- la_fn_geo %>%
+    filter(RACE == "Black or African American" )
+
+b_fn_split <- lapply(unique(b_fn_geo$rowid), function(x) {
+  df = as.matrix(b_fn_geo[b_fn_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+b_fn_lines <- SpatialLines(b_fn_split)
+
+b_fn_df <- SpatialLinesDataFrame(b_fn_lines, b_fn_geo[, c("rowid", "weight")])
+
+# White (w)
+w_fn_geo <- la_fn_geo %>%
+    filter(RACE == "White" )
+
+w_fn_split <- lapply(unique(w_fn_geo$rowid), function(x) {
+  df = as.matrix(w_fn_geo[w_fn_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+w_fn_lines <- SpatialLines(w_fn_split)
+
+w_fn_df <- SpatialLinesDataFrame(w_fn_lines, w_fn_geo[, c("rowid", "weight")], match.ID = TRUE)
+
+
+# Native Hawaiian or Pacific Islander (n)
+n_fn_geo <- la_fn_geo %>%
+    filter(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)" )
+
+n_fn_split <- lapply(unique(n_fn_geo$rowid), function(x) {
+  df = as.matrix(n_fn_geo[n_fn_geo$rowid == x, c("lng", "lat")])
+  lns = Lines(Line(df), ID = x)
+  return(lns)
+})
+
+n_fn_lines <- SpatialLines(n_fn_split)
+
+n_fn_df <- SpatialLinesDataFrame(n_fn_lines, n_fn_geo[, c("rowid", "weight")])
+```
+
+# NOT QUITE FINAL BUT WORKS FOR PAPER - SPATIAL NETWORKS
+```{r pnets}
+# Turn into SpatialLines
+# Need data in format of id, lat, long
+leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(stroke = TRUE, color = "gray", weight = 0.75, opacity = 0.5,
+                fillOpacity = 0.1) %>%
+    setView(-118.2478, 33.94895, 9) %>%
+    addPolylines(data = w_fn_lines, weight = 1, color = "red", opacity = 0.5) %>%
+    addPolylines(data = ai_fn_lines, weight = 1, color = "blue", opacity = 0.5)# %>%
+    #addPolylines(data = a_fn_lines, weight = 1, color = "green", opacity = 0.3) %>%
+    #addPolylines(data = b_fn_lines, weight = 1, color = "purple", opacity = 0.3) %>%
+    #addPolylines(data = h_fn_lines, weight = 1, color = "yellow", opacity = 0.3) %>%
+    #addPolylines(data = n_fn_lines, weight = 1, color = "orange", opacity = 0.3)
+```
+
+```{r extranets} 
+# la_dont_move <- as.data.frame(la_spdf) %>%
+#     select(SAMPN, PERNO, RACE, PLANO, Neighborhood) %>%
+#     group_by(SAMPN, PERNO, RACE) %>%
+#     mutate(FROM = Neighborhood) %>%
+#     mutate(TO = lead(Neighborhood)) %>%
+#     group_by(SAMPN, PERNO, RACE) %>%
+#     filter(PLANO != max(PLANO)) %>%
+#     select(-PLANO, -Neighborhood) %>%
+#     distinct(SAMPN, PERNO, RACE, FROM) %>%
+#     filter(!(is.na(FROM)))
+
+w_net <- tbl_graph(nodes = la_nnames, edges = w_nn, directed = TRUE)
+
+b_net <- tbl_graph(nodes = la_nnames, edges = b_nn, directed = TRUE)
+
+ai_net <- tbl_graph(nodes = la_nnames, edges = ai_nn, directed = TRUE)
+
+ggraph(w_net) + geom_edge_link() + geom_node_point() + theme_graph()
+
+ggraph(ai_net, layout = "linear") + 
+    geom_edge_arc(aes(width = weight), alpha = 0.8) + 
+    scale_edge_width(range = c(0.2, 2)) +
+    geom_node_text(aes(label = Neighborhood)) +
+    labs(edge_width = "Number of trips") +
+    theme_graph()
+
+
+
+lahoods_cent <- SpatialPointsDataFrame(gCentroid(lahoods, byid = TRUE),
+                                       lahoods@data, match.ID = FALSE)
+
+lahoods_df <- as(lahoods_cent, "data.frame") %>%
+    select(name, x, y)
+
+la_fn <- left_join(la_nn, lahoods_df, by = c("TO" = "name")) %>%
+    rename(XCORD_TO = x) %>%
+    rename(YCORD_TO = y) %>%
+    left_join(lahoods_df, by = c("FROM" = "name")) %>%
+    rename(XCORD_FROM = x) %>%
+    rename(YCORD_FROM = y)
+
+#write.csv(la_fn, file = "/Users/sburtner/Documents/AAG2019/la_travel_fn.csv", row.names = FALSE)
+```
+
+# Test mapping one individual
+
+```{r just1}
+topN <- 50
+
+# Join LA travel data with just LA households
+#la_travel <- left_join(person_clean, place_clean, by = c("SAMPN", "PERNO")) %>%
+#    left_join(activity_clean, by = c("SAMPN", "PERNO", "PLANO")) %>%
+#    right_join(la_hh_pts, by = c("SAMPN"))
+
+white1_pre <- la_travel %>%
+    filter(RACE == "White") %>%
+    filter(PERNO == 1) %>%
+    group_by(SAMPN, PERNO) %>%
+    tally(PLANO) %>%
+    arrange(desc(n)) %>%
+    head(topN)
+
+white1_travel <- la_travel %>%
+    filter(SAMPN %in% white1_pre$SAMPN)
+
+hispanic1_pre <- la_travel %>%
+    filter(RACE == "Hispanic") %>%
+    filter(PERNO == 1) %>%
+    group_by(SAMPN, PERNO) %>%
+    tally(PLANO) %>%
+    arrange(desc(n)) %>%
+    head(topN)
+
+hispanic1_travel <- la_travel %>%
+    filter(SAMPN %in% hispanic1_pre$SAMPN)
+
+asian1_pre <- la_travel %>%
+    filter(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)") %>%
+    filter(PERNO == 1) %>%
+    group_by(SAMPN, PERNO) %>%
+    tally(PLANO) %>%
+    arrange(desc(n)) %>%
+    head(topN)
+
+asian1_travel <- la_travel %>%
+    filter(SAMPN %in% asian1_pre$SAMPN)
+
+black1_pre <- la_travel %>%
+    filter(RACE == "Black or African American") %>%
+    filter(PERNO == 1) %>%
+    group_by(SAMPN, PERNO) %>%
+    tally(PLANO) %>%
+    arrange(desc(n)) %>%
+    head(topN)
+
+black1_travel <- la_travel %>%
+    filter(SAMPN %in% black1_pre$SAMPN)
+
+```
+
+Testing creating spatial lines
+```{r sl}
+all_df <- rbind(white1_travel, hispanic1_travel, asian1_travel, black1_travel)
+
+
+#write.csv(all_df, file = "/Users/sburtner/Documents/MAT259/MultiLayered_TravelActivity_Networks/data/top50_la_travel.csv", row.names = FALSE)
+
+
+white1_lines <- white1_travel %>%
+    select(XCORD, YCORD) %>%
+    as.matrix() %>%
+    Line()
+
+white1_df <- white1_travel %>%
+    select(SAMPN, PERNO) %>%
+    as.matrix()
+
+hispanic1_lines <- hispanic1_travel %>%
+    select(XCORD, YCORD) %>%
+    as.matrix() %>%
+    Line()
+
+asian1_lines <- asian1_travel %>%
+    select(XCORD, YCORD) %>%
+    as.matrix() %>%
+    Line()
+
+black1_lines <- black1_travel %>%
+    select(XCORD, YCORD) %>%
+    as.matrix() %>%
+    Line()
+
+white_llist <- Lines(list(white1_lines), ID = "White")
+hispanic_llist <- Lines(list(hispanic1_lines), ID = "Hispanic" )
+asian_llist <- Lines(list(asian1_lines), ID = "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)")
+black_llist <- Lines(list(black1_lines), ID = "Black or African American" )
+
+one_sl <- SpatialLines(list(white_llist, hispanic_llist, asian_llist, black_llist),
+                       proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84"))
+
+# bw_sl <- SpatialLines(list(white_llist, black_llist),
+#                       proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84"))
+# 
+# aw_sl <- SpatialLines(list(white_llist, asian_llist),
+#                       proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84"))
+# hw_sl <- SpatialLines(list(white_llist, hispanic_llist),
+#                       proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84"))
+
+identicalCRS(lahoods, one_sl)
+
+#plot(one_sl, col = c("red", "blue", "green", "yellow"))
+```
+
+```{r onemap}
+# white     hispanic    asian   black
+# red       blue        green   purple
+
+m1 <- leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(data = lahoods, stroke = TRUE, color = "white", weight = 1, opacity = 0.9,
+                fillOpacity = 0.4, fillColor = ~pal1(name)) %>%
+    addPolylines(data = one_sl, color = c("red", "blue", "green", "purple"), weight = 1.5) #%>%
+    #addCircleMarkers(data = one_sl, lng = XCORD, lat = YCORD, radius = 2,
+    #         label = as.character(one_hh_df$PLANO),
+    #         labelOptions = lapply(1:nrow(one_hh_df), function(x) {
+    #             labelOptions(opacity = 1, noHide = TRUE,
+    #                          direction = "auto", offset = c(10, -10))
+    #         }))
+    
+
+m1
+
+
+all_race <- as.data.frame(cbind(rep("White", length(white1_lines)),
+                                rep("Hispanic", length(hispanic1_lines)),
+                                rep("Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)", length(asian1_lines)),
+                                rep("Black or African American", length(black1_lines)))) %>%
+    gather("Old_column", "RACE", V1:V4) %>%
+    select(RACE)
+
+row.names(all_race) <- all_race$RACE
+
+all_sl_df <- SpatialLinesDataFrame(one_sl, all_race)
+
+#writeOGR(obj = all_sl_df, layer = "top50_travel_activity",
+#         dsn = "/Users/sburtner/Documents/MAT259/MultiLayered_TravelActivity_Networks/data",
+#         driver = "ESRI Shapefile")
+```
+
+Test individual mapping of trajectories
+```{r testin}
+# Different type of mapping
+w2_travel <- la_travel %>%
+    filter(SAMPN == 1452275) %>%
+    filter(PERNO == 1)
+
+h2_travel <- la_travel %>%
+    filter(SAMPN == 1337662) %>%
+    filter(PERNO == 1)
+
+b2_travel <- la_travel %>%
+    filter(SAMPN == 1495562) %>%
+    filter(PERNO == 1)
+
+a2_travel <- la_travel %>%
+    filter(SAMPN == 1411326) %>%
+    filter(PERNO == 1)
+
+w2_sp_df <- SpatialPointsDataFrame(select(w2_travel, XCORD, YCORD), w2_travel,
+                                   proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+h2_sp_df <- SpatialPointsDataFrame(select(h2_travel, XCORD, YCORD), h2_travel,
+                                   proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+b2_sp_df <- SpatialPointsDataFrame(select(b2_travel, XCORD, YCORD), b2_travel,
+                                   proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+a2_sp_df <- SpatialPointsDataFrame(select(a2_travel, XCORD, YCORD), a2_travel,
+                                   proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+identicalCRS(lahoods, w2_sp_df) # proves coordinate system is identical
+```
+
+
+```{r testmap}
+m2 <- leaflet(lahoods) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    addPolygons(stroke = TRUE, color = "white", weight = 1, opacity = 0.8,
+                fillOpacity = 0.2, fillColor = ~pal1(name)) %>%
+    addPolylines(lng = w2_sp_df$XCORD, lat = w2_sp_df$YCORD, weight = 2, color = "red", opacity = 0.9) %>%
+    addCircleMarkers(lng = w2_sp_df$XCORD, lat = w2_sp_df$YCORD, color = "red", radius = 2,
+             label = as.character(w2_sp_df$PLANO),
+             labelOptions = lapply(1:nrow(w2_sp_df), function(x) {
+                 labelOptions(opacity = 1, noHide = TRUE,
+                              direction = "auto", offset = c(10, -10))
+             })) %>%
+    addPolylines(lng = h2_sp_df$XCORD, lat = h2_sp_df$YCORD, weight = 2, color = "blue", opacity = 0.9) %>%
+    addCircleMarkers(lng = h2_sp_df$XCORD, lat = h2_sp_df$YCORD, color = "blue", radius = 2,
+             label = as.character(h2_sp_df$PLANO),
+             labelOptions = lapply(1:nrow(h2_sp_df), function(x) {
+                 labelOptions(opacity = 1, noHide = TRUE,
+                              direction = "auto", offset = c(10, -10))
+             })) %>%
+    addPolylines(lng = a2_sp_df$XCORD, lat = a2_sp_df$YCORD, weight = 2, color = "green", opacity = 0.9) %>%
+    addCircleMarkers(lng = a2_sp_df$XCORD, lat = a2_sp_df$YCORD, color = "green", radius = 2,
+             label = as.character(a2_sp_df$PLANO),
+             labelOptions = lapply(1:nrow(a2_sp_df), function(x) {
+                 labelOptions(opacity = 1, noHide = TRUE,
+                              direction = "auto", offset = c(10, -10))
+             })) %>%
+    addPolylines(lng = b2_sp_df$XCORD, lat = b2_sp_df$YCORD, weight = 2, color = "purple", opacity = 0.9) %>%
+    addCircleMarkers(lng = b2_sp_df$XCORD, lat = b2_sp_df$YCORD, color = "purple", radius = 2,
+             label = as.character(b2_sp_df$PLANO),
+             labelOptions = lapply(1:nrow(b2_sp_df), function(x) {
+                 labelOptions(opacity = 1, noHide = TRUE,
+                              direction = "auto", offset = c(10, -10))
+             }))
+
+m2
+```
+
+# Test mapping locations/trajectories first by race
+```{r map}
+black_travel <- travel %>%
+    filter(RACE == "Black or African American") %>%
+    select(SAMPN, PERNO, PLANO, XCORD, YCORD) %>% #not including ACTNO
+    #group_by(SAMPN, PERNO) %>%
+    distinct() %>%
+    sample_n(50)
+
+black_one <- black_travel[1:7, ]
+
+white_travel <- travel %>%
+    filter(RACE == "White") %>%
+    select(SAMPN, PERNO, PLANO, XCORD, YCORD) %>% #not including ACTNO
+    distinct() %>%
+    sample_n(50)
+
+hispa_travel <- travel %>%
+    filter(RACE == "Hispanic") %>%
+    select(SAMPN, PERNO, PLANO, XCORD, YCORD) %>% #not including ACTNO
+    distinct() %>%
+    sample_n(50)
+
+asian_travel <- travel %>%
+    filter(RACE == "Asian (Asian Indian, Japanese, Chinese, Korean, Filipino, Vietnamese)") %>%
+    select(SAMPN, PERNO, PLANO, XCORD, YCORD) %>% #not including ACTNO
+    distinct() %>%
+    sample_n(50)
+
+nhopi_travel <- travel %>%
+    filter(RACE == "Native Hawaiian or Pacific Islander (Guamanian, Samoan, Fijian)") %>%
+    select(SAMPN, PERNO, PLANO, XCORD, YCORD) %>% #not including ACTNO
+    distinct()
+
+aioan_travel <- travel %>%
+    filter(RACE == "American Indian or Alaska Native") %>%
+    select(SAMPN, PERNO, PLANO, XCORD, YCORD) %>% #not including ACTNO
+    distinct()
+
+leaflet(lbhoods) %>%
+    setView(lng = -118.183650, lat = 33.804277, zoom = 11) %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    #addPolygons(stroke = FALSE, opacity = 0.5, color = "gray") %>%
+    addPolylines(lng = black_travel$XCORD, lat = black_travel$YCORD, weight = 2, color = "blue")# %>%
+    #addPolylines(lng = white_travel$XCORD, lat = white_travel$YCORD, weight = 2, color = "green") %>%
+    #addPolylines(lng = hispa_travel$XCORD, lat = hispa_travel$YCORD, weight = 2, color = "red") %>%
+    #addPolylines(lng = asian_travel$XCORD, lat = asian_travel$YCORD, weight = 2, color = "purple") %>%
+    #addPolylines(lng = nhopi_travel$XCORD, lat = nhopi_travel$YCORD, weight = 2, color = "orange") %>%
+    #addPolylines(lng = aioan_travel$XCORD, lat = aioan_travel$YCORD, weight = 2, color = "yellow")
+```
